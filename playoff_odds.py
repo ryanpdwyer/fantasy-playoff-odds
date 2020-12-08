@@ -6,6 +6,8 @@ import pandas as pd
 import requests
 from collections import OrderedDict, defaultdict, Counter
 
+st.cache = lambda x: x
+
 def groupby(d):
     res = defaultdict(list)
     for key, val in sorted(d.items()):
@@ -71,10 +73,28 @@ def simulate_remaining_weeks(games_left, n_teams, N, pts_regress, stdev, future_
     return pts_unplayed, wins_unplayed
 
 @st.cache
-def getSeedsArray(n_teams, N, overall_pts, overall_wins):
+def getSeedsArray(n_teams, N, overall_pts, overall_wins, divisions):
     seeds = np.zeros((N, n_teams))
     for i, (pts_, wins_) in enumerate(zip(overall_pts, overall_wins)):
         inds_ = np.lexsort((pts_, wins_))[::-1]
+        seeds[i, inds_] = np.arange(n_teams)+1
+    
+    return seeds
+
+@st.cache
+def getSeedsArrayDivisions(n_teams, N, overall_pts, overall_wins, divisions):
+    seeds = np.zeros((N, n_teams))
+    n_divisions = max(divisions)
+    division_dict = groupby(dict(zip(np.arange(len(divisions), dtype=int), divisions)))
+    for i, (pts_, wins_) in enumerate(zip(overall_pts, overall_wins)):
+        division_winners = np.array([div[np.lexsort((pts_[div], wins_[div]))[-1]] for div in division_dict.values()], dtype=int)
+        not_winners = np.array([x for x in range(n_teams) if x not in division_winners], dtype=int)
+        
+        division_winners_sorted = np.lexsort((pts_[division_winners], wins_[division_winners]))[::-1] # This is the correct overall ordering...
+        not_winners_sorted = np.lexsort((pts_[not_winners], wins_[not_winners]))[::-1]
+
+        inds_ = np.r_[division_winners[division_winners_sorted], not_winners[not_winners_sorted]].flatten()
+
         seeds[i, inds_] = np.arange(n_teams)+1
     
     return seeds
@@ -91,11 +111,31 @@ def makeSeeds(seeds, teams, n_playoff_teams):
     inds_out.extend(np.arange(1, n_playoff_teams+1))
     return dfS.loc[:, inds_out]
 
+playoff_options = {"record_points": ("By record, using total points as a tiebreaker", getSeedsArray),
+        "record_division_points": ("By record (division winners get top seeds), using total points as a tiebreaker", getSeedsArrayDivisions)}
+class PlayoffFormats:
+    def __init__(self, d=playoff_options):
+        self.d = d
+        self.options = list(d.keys())
+    
+    def __call__(self, opt):
+        return self.d[opt][0]
+    
+    def getSeeds(self, opt):
+        return self.d[opt][1]
+    
+
+playoff_formats = PlayoffFormats(playoff_options)
+
 
 st.title("Fantasy Football Playoff Odds")
 st.write("Enter your Sleeper league url or ID below:")
 url = st.text_input("Sleeper URL or ID")
 season_weeks = intx(st.text_input("Regular season weeks"))
+playoff_format = st.selectbox("How are playoff seeds determined?",
+                    options=playoff_formats.options,
+                    format_func=playoff_formats,
+                    index=0)
 st.write("TO DO: Add options to choose exactly how playoff teams are chosen and seeded here")
 
 
@@ -111,6 +151,7 @@ if url != "" and season_weeks != '':
     roster_display = OrderedDict((key, owners[val]) for key, val in roster_owner.items())
     teams_canonical = np.array(list(roster_display.values()))
     n_teams = len(teams_canonical)
+    
 
     n_playoff_teams = rjson['settings']['playoff_teams']
     st.header("{} League".format(rjson['name']))
@@ -164,7 +205,8 @@ if url != "" and season_weeks != '':
 
     overall_pts = (pts_played.sum(axis=0).reshape((-1,1)) + pts_unplayed.sum(axis=0)).T
     overall_wins = (wins_played.sum(axis=0).reshape((-1, 1)) + wins_unplayed.sum(axis=0)).T
-    seeds = getSeedsArray(n_teams, N, overall_pts, overall_wins)
+    getSeeds = playoff_formats.getSeeds(playoff_format)
+    seeds = getSeeds(n_teams, N, overall_pts, overall_wins, rr_df.loc[teams_canonical, 'division'].values)
 
     inds = np.arange(N, dtype=int)
 
