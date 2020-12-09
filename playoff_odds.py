@@ -5,7 +5,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import requests
-from tqdm import tqdm
 from collections import OrderedDict, defaultdict, Counter
 
 def groupby(d):
@@ -179,7 +178,7 @@ def playoffs_fast(pts, seedsRow, n_playoff_teams, season_weeks, std):
 @st.cache
 def makeAllPlayoffResults(overall_pts, seeds, n_playoff_teams, season_weeks, stdev):
     return np.array(
-    [playoffs_fast(p,s, n_playoff_teams, season_weeks, stdev) for p, s in tqdm(zip(overall_pts, seeds), total=N)])
+    [playoffs_fast(p,s, n_playoff_teams, season_weeks, stdev) for p, s in zip(overall_pts, seeds)])
 
 
 def analyzePlayoffResults(playoffResults, teams):
