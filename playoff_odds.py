@@ -1,12 +1,12 @@
+from os import supports_dir_fd
 import streamlit as st
 # To make things easier later, we're also importing numpy and pandas for
 # working with sample data.
 import numpy as np
 import pandas as pd
 import requests
+from tqdm import tqdm
 from collections import OrderedDict, defaultdict, Counter
-
-st.cache = lambda x: x
 
 def groupby(d):
     res = defaultdict(list)
@@ -74,7 +74,7 @@ def simulate_remaining_weeks(games_left, n_teams, N, pts_regress, stdev, future_
 
 @st.cache
 def getSeedsArray(n_teams, N, overall_pts, overall_wins, divisions):
-    seeds = np.zeros((N, n_teams))
+    seeds = np.zeros((N, n_teams), dtype=int)
     for i, (pts_, wins_) in enumerate(zip(overall_pts, overall_wins)):
         inds_ = np.lexsort((pts_, wins_))[::-1]
         seeds[i, inds_] = np.arange(n_teams)+1
@@ -83,7 +83,7 @@ def getSeedsArray(n_teams, N, overall_pts, overall_wins, divisions):
 
 @st.cache
 def getSeedsArrayDivisions(n_teams, N, overall_pts, overall_wins, divisions):
-    seeds = np.zeros((N, n_teams))
+    seeds = np.zeros((N, n_teams), dtype=int)
     n_divisions = max(divisions)
     division_dict = groupby(dict(zip(np.arange(len(divisions), dtype=int), divisions)))
     for i, (pts_, wins_) in enumerate(zip(overall_pts, overall_wins)):
@@ -127,6 +127,74 @@ class PlayoffFormats:
 
 playoff_formats = PlayoffFormats(playoff_options)
 
+
+def playoffs_fast(pts, seedsRow, n_playoff_teams, season_weeks, std):
+    seedsArray = seedsRow
+    playoff_inds = np.where(seedsArray <= n_playoff_teams)[0]
+
+    # Just the playoff teams
+    ppts = pts[playoff_inds]
+    pseedsRow = list(seedsArray[playoff_inds])
+
+    # Regress expected points during the playoffs heavily back to the mean
+    ppts_avg = (pts.mean()* 0.5 + ppts*0.5)/season_weeks
+
+    if n_playoff_teams == 6:
+        matchups = [{'Q1': (3, 6), 'Q2': (4, 5)}, {'S1': (1, 'Q2_W'), 'S2': (2, 'Q1_W')}, {"Championship": ('S1_W', 'S2_W'), "Third": ("S1_L", "S2_L")}]
+    elif n_playoff_teams == 4:
+        matchups =  [{'S1': (1, 4), 'S2': (2, 3)}, {"Championship": ('S1_W', 'S2_W'), "Third": ("S1_L", "S2_L")}]
+    elif n_playoff_teams == 8:
+        matchups = [{'Q1': (1, 8), 'Q2': (4, 5), 'Q3': (2, 7), 'Q4': (3, 6)}, {'S1': ('Q1_W', 'Q2_W'), 'S2': ('Q3_W', 'Q4_W')},
+                    {"Championship": ('S1_W', 'S2_W'), "Third": ("S1_L", "S2_L")}]
+    else:
+        raise ValueError("Only 4, 6, or 8 playoff teams supported.")
+
+    playoffPts = np.random.randn(n_playoff_teams, len(matchups))*std + ppts_avg.reshape(-1,1)
+
+    results = {i: pseedsRow.index(i) for i in range(1, n_playoff_teams+1)} # Match seed to index...
+    for j, matchup_weeks in enumerate(matchups):
+        for key, val in matchup_weeks.items():
+            s1, s2 = val
+            r1 = results[s1]
+            r2 = results[s2]
+            if playoffPts[r1, j] > playoffPts[r2, j]:
+                results[key+'_W'] = r1
+                results[key+'_L'] = r2
+            else:
+                results[key+'_W'] = r2
+                results[key+'_L'] = r1
+
+    yyyPlayoffs = np.ones_like(ppts_avg, dtype=int)*5
+    yyyPlayoffs[results['Championship_W']] = 1
+    yyyPlayoffs[results['Championship_L']] = 2
+    yyyPlayoffs[results['Third_W']] = 3
+    yyyPlayoffs[results['Third_L']] = 4
+
+
+    yyy = np.ones_like(seedsArray, dtype=int)*(n_playoff_teams+1)
+    yyy[playoff_inds] = yyyPlayoffs
+
+    return yyy
+
+@st.cache
+def makeAllPlayoffResults(overall_pts, seeds, n_playoff_teams, season_weeks, stdev):
+    return np.array(
+    [playoffs_fast(p,s, n_playoff_teams, season_weeks, stdev) for p, s in tqdm(zip(overall_pts, seeds), total=N)])
+
+
+def analyzePlayoffResults(playoffResults, teams):
+    winsCount = {team: Counter(play) for team, play in zip(teams,
+                                                    playoffResults.T)}
+    dfPR = pd.DataFrame.from_dict(winsCount, orient='index').fillna(0)/len(playoffResults)*100
+    dfPR.sort_values(1, ascending=False, inplace=True)
+    dfPRO = dfPR.loc[:, [1, 2, 3]].rename(columns={1: "Champion", 2: "2nd", 3: "3rd" })
+    dfPRO['Make Final'] = dfPRO["Champion"] + dfPRO["2nd"]
+    dfPRO.round(1)
+    try:
+        del dfPRO['avgSeed']
+    except:
+        pass
+    return dfPRO
 
 st.title("Fantasy Football Playoff Odds")
 st.write("Enter your Sleeper league url or ID below:")
@@ -181,7 +249,7 @@ if url != "" and season_weeks != '':
     pts_dict = [{x['roster_id']: x['points'] for x in y} for y in matchups]
     weekly_matchups = [{x['roster_id']: x['matchup_id'] for x in y} for y in matchups]
     weekly_opponents = np.array([get_opponents(w) for w in weekly_matchups])
-    pts = np.array([list(p.values()) for p in pts_dict])
+    pts = np.array([list(p.values()) for p in pts_dict], dtype=float)
 
     pts_played = pts[:games]
     wins_played = np.array([pts_row > pts_row[opp] for pts_row, opp in zip(pts_played, weekly_opponents[:games])])
@@ -206,7 +274,10 @@ if url != "" and season_weeks != '':
     overall_pts = (pts_played.sum(axis=0).reshape((-1,1)) + pts_unplayed.sum(axis=0)).T
     overall_wins = (wins_played.sum(axis=0).reshape((-1, 1)) + wins_unplayed.sum(axis=0)).T
     getSeeds = playoff_formats.getSeeds(playoff_format)
+    
     seeds = getSeeds(n_teams, N, overall_pts, overall_wins, rr_df.loc[teams_canonical, 'division'].values)
+
+    playoffResults = makeAllPlayoffResults(overall_pts, seeds, n_playoff_teams, season_weeks, stdev)
 
     inds = np.arange(N, dtype=int)
 
@@ -261,6 +332,8 @@ if url != "" and season_weeks != '':
                     columns=['avgWins', 'avgPts', 'playoffPercent'])
     
     dfAvg = dfAvg.loc[dfSS.index, :]
+
+    dfPRO = analyzePlayoffResults(playoffResults[inds], teams_canonical)
     
     st.write("Playoff Seeding Chances")
     st.dataframe(dfSS.style.format("{:.1f}")\
@@ -273,6 +346,10 @@ if url != "" and season_weeks != '':
         .background_gradient(cmap='RdBu_r', low=1, high=1, axis=0))
 
 
+    st.write("Playoff Outcomes")
+    st.dataframe(dfPRO.style.format("{:.1f}")\
+        .background_gradient(cmap='Greens', low=0.0, high=0.7))
+    
 
     # Choose playoff teams...
     # Bracket...
