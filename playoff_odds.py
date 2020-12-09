@@ -203,6 +203,7 @@ playoff_format = st.selectbox("How are playoff seeds determined?",
                     options=playoff_formats.options,
                     format_func=playoff_formats,
                     index=0)
+game_vs_league_median = st.checkbox("Extra game vs league median?")
 st.write("TO DO: Add options to choose exactly how playoff teams are chosen and seeded here")
 
 
@@ -230,8 +231,8 @@ if url != "" and season_weeks != '':
     rr = filter_rosters(rosters)
     rr_df = pd.DataFrame.from_dict({owners[roster_owner[key]]: val for key, val in rr.items()},
                     orient='index')
-    st.write("Current Standings")
-    st.dataframe(rr_df)
+
+
 
     games = (rr_df['wins'].iloc[0] + rr_df['losses'].iloc[0] + rr_df['ties'].iloc[0])
     week = games + 1
@@ -253,7 +254,15 @@ if url != "" and season_weeks != '':
     pts_played = pts[:games]
     wins_played = np.array([pts_row > pts_row[opp] for pts_row, opp in zip(pts_played, weekly_opponents[:games])])
     rotis = rotisserie(pts_played)
+    rotis_win_pct = rotis.mean(axis=0)/(n_teams - 1)
+    rotis_wins = rotis >= 5
     
+    rr_df.loc[teams_canonical, 'Rotis. Win %'] = rotis_win_pct
+
+    st.write("Current Standings")
+    st.dataframe(rr_df.style.format("{:.1f}", subset=['pts'])\
+                            .format("{:.3f}", subset=['Rotis. Win %']))
+
     ptsAvg = pts_played.mean()
     pts_regress = pts_played.mean(axis=0)*0.5 + ptsAvg*0.5
 
