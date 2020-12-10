@@ -1,4 +1,3 @@
-from os import supports_dir_fd
 import streamlit as st
 # To make things easier later, we're also importing numpy and pandas for
 # working with sample data.
@@ -21,6 +20,14 @@ def get_opponents(d):
         out[x[i, 1]] = x[i, 0]
     return out 
 
+def get_opponents_no_off_one(d):
+    x = np.array(list(groupby(d).values())) # Subtract 1 so we have indices
+    out = np.zeros(x.size, dtype=int)
+    for i in range(x.shape[0]):
+        out[x[i, 0]] = x[i, 1]
+        out[x[i, 1]] = x[i, 0]
+    return out 
+
 def get_id(url_or_id):
     possible_ids = [x for x in url_or_id.split("/") if x.isdigit()]
     return possible_ids[0]
@@ -30,6 +37,8 @@ def get_league(id):
     r = requests.get("https://api.sleeper.app/v1/league/"+id)
     return r.json()
 
+
+
 @st.cache
 def get_users(id):
     return requests.get("https://api.sleeper.app/v1/league/{}/users".format(id)).json()
@@ -37,6 +46,32 @@ def get_users(id):
 @st.cache
 def get_rosters(id):
     return requests.get("https://api.sleeper.app/v1/league/{}/rosters".format(id)).json()
+
+@st.cache
+def get_league_espn(id):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id)).json()
+
+@st.cache
+def get_league_data_espn(id):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mMatchup")).json()
+
+@st.cache
+def get_league_members_espn(id):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mTeam")).json()
+
+
+@st.cache
+def get_league_espn_hist(id, year):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year)).json()[0]
+
+@st.cache
+def get_league_data_espn_hist(id, year):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mMatchup")).json()[0]
+
+@st.cache
+def get_league_members_espn_hist(id, year):
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mTeam")).json()[0]
+
 
 @st.cache
 def get_matchups(id, week):
@@ -201,8 +236,8 @@ def analyzePlayoffResults(playoffResults, teams):
 # st.write('''<div style='height: 200px; background-image: url("https://lh5.googleusercontent.com/GAmGcsk5dPuofSN8eXAYinlFC8lxIQdvynYW7CgyoGRhOy_em36mmJ1pNtpchiz7Es-q86OUjA=w16383");'></div>''', unsafe_allow_html=True)
 
 st.title("Fantasy Football Playoff Odds")
-st.write("Enter your Sleeper league url or ID below:")
-url = st.text_input("Sleeper URL or ID")
+league_website = st.selectbox("League website", options=["Sleeper" , "ESPN"])
+url = st.text_input("League ID")
 season_weeks = intx(st.text_input("Regular season weeks"))
 playoff_format = st.selectbox("How are playoff seeds determined?",
                     options=playoff_formats.options,
@@ -210,13 +245,14 @@ playoff_format = st.selectbox("How are playoff seeds determined?",
                     index=0)
 game_vs_league_median = st.checkbox("Extra game vs league median?")
 
-st.write("TO DO: Add options to choose exactly how playoff teams are chosen and seeded here")
 
 
 
 
-if url != "" and season_weeks != '':
+if url != "" and season_weeks != '' and league_website == 'Sleeper':
     id = get_id(url)
+
+    # Sleeper specific
     rjson = get_league(id)
     users = get_users(id)
     rosters = get_rosters(id)
@@ -225,6 +261,9 @@ if url != "" and season_weeks != '':
     # teams = list(owners.values())
     roster_owner = OrderedDict((r['roster_id'], r['owner_id']) for r in rosters)
     roster_display = OrderedDict((key, owners[val]) for key, val in roster_owner.items())
+
+    ## Everything needs this list of canonical teams, number of teams
+    ## Number of playoff teams
     teams_canonical = np.array(list(roster_display.values()))
     n_teams = len(teams_canonical)
     
@@ -235,11 +274,14 @@ if url != "" and season_weeks != '':
     st.write("Playoff teams: {}".format(rjson['settings']['playoff_teams']))
 
 
-
+    # Sleeper specific
     rr = filter_rosters(rosters)
     rr_df = pd.DataFrame.from_dict({owners[roster_owner[key]]: val for key, val in rr.items()},
                     orient='index')
-
+    
+    divisions = np.zeros(n_teams, dtype=int)
+    for id_, val in rr.items():
+        divisions[id_-1] = val['division']
 
 
     games = (rr_df['wins'].iloc[0] + rr_df['losses'].iloc[0] + rr_df['ties'].iloc[0])
@@ -247,40 +289,119 @@ if url != "" and season_weeks != '':
     # Contains wins, losses, points, almost everything
     # we need on a week-by-week basis
 
-    # rr
-    ptsAvg = rr_df['pts'].mean() / games # Average pts / week...
-    pts_regress = rr_df['pts'].values/games * 0.5 + ptsAvg * 0.5
-
     matchups = [get_matchups(id, w) for w in range(1, season_weeks+1)]
     
+
     # Using roster_id as the canonical ordering
     pts_dict = [{x['roster_id']: x['points'] for x in y} for y in matchups]
     weekly_matchups = [{x['roster_id']: x['matchup_id'] for x in y} for y in matchups]
     weekly_opponents = np.array([get_opponents(w) for w in weekly_matchups])
     pts = np.array([list(p.values()) for p in pts_dict], dtype=float)
 
+    # Once I have the pts array, and the matchups list,
+    # I can generate everything else from scratch! ----
+
+
+
+    # This ends the sleeper specific part of the code
+
+def make_opp_arr(x):
+    x = np.array(x)
+    out = np.zeros(x.size, dtype=int)
+    for i in range(x.shape[0]):
+        out[x[i, 0]] = x[i, 1]
+        out[x[i, 1]] = x[i, 0]
+    return out 
+
+
+if url != "" and season_weeks != '' and league_website == 'ESPN':
+    id = get_id(url)
+
+    st.write(id)
+    league = get_league_espn(id)
+    league_data = get_league_data_espn(id)
+    member_info = get_league_members_espn(id)
+
+    # Maps id to full name...
+    member_dict = {x['id']: x['firstName']+x['lastName'] for x in member_info['members']}
+    
+
+    od = OrderedDict((x['id'], x['abbrev']) for x in league['teams']) # Add more here...
+    ## Everything needs this list of canonical teams, number of teams
+    ## Number of playoff teams
+    teams_canonical = np.array(list(od.values()))
+    n_teams = len(teams_canonical)
+
+    divisions = np.zeros(n_teams, dtype=int)
+    for team in member_info['teams']:
+        divisions[team['id']-1] = team['divisionId']
+
+    pts = np.zeros((season_weeks, n_teams))
+    weekly_matchups_dict = defaultdict(list)
+    for game in league_data['schedule']:
+        week = game['matchupPeriodId']
+        if week <= season_weeks:
+            pts[week-1, game['away']['teamId']-1] = game['away']['totalPoints']
+            pts[week-1, game['home']['teamId']-1] = game['home']['totalPoints']
+            weekly_matchups_dict[week].append((game['away']['teamId']-1, game['home']['teamId']-1))
+    
+    week = league['status']['currentMatchupPeriod']
+    games = week - 1
+
+    weekly_matchups = [weekly_matchups_dict[i] for i in range(1, season_weeks+1)]
+    weekly_opponents = np.array([make_opp_arr(x) for x in weekly_matchups])
+
+
+    
+
+    n_playoff_teams = 6 # Where is this in the ESPN API? TODO
+    st.header("{}".format(league['settings']['name']))
+    st.write("Teams: {}".format(n_teams))
+    st.write("Playoff teams: {}".format(n_playoff_teams))
+
+
+
+
+    # Contains wins, losses, points, almost everything
+    # we need on a week-by-week basis
+
+
+if url != "" and season_weeks != '':
+    # This stuff is largely reproducible...
     pts_played = pts[:games]
     wins_played = np.array([pts_row > pts_row[opp] for pts_row, opp in zip(pts_played, weekly_opponents[:games])])
+    total_wins = wins_played.sum(axis=0)
+
     rotis = rotisserie(pts_played)
     rotis_win_pct = rotis.mean(axis=0)/(n_teams - 1)
-    rotis_wins = rotis >= 5
-    
-    rr_df.loc[teams_canonical, 'Rotis. Win %'] = rotis_win_pct
+    rotis_wins = rotis >= int(n_teams/2)
 
+    if game_vs_league_median:
+        total_wins += rotis_wins.sum(axis=0)
+    
     st.write("Current Standings")
-    st.dataframe(rr_df.style.format("{:.1f}", subset=['pts'])\
+    df_standings = pd.DataFrame(np.c_[total_wins, pts.sum(axis=0), rotis_win_pct, divisions], index=teams_canonical,
+                            columns=['Wins', 'Pts', 'Rotis. Win %', 'Division'])
+    # This should be generated from scratch...
+    st.dataframe(df_standings.style.format("{:.0f}", subset=['Division'])\
+                            .format("{:.1f}", subset=['Pts', 'Wins'])\
                             .format("{:.3f}", subset=['Rotis. Win %']))
 
+    
+    # This is not sleeper specific...
     ptsAvg = pts_played.mean()
     pts_regress = pts_played.mean(axis=0)*0.5 + ptsAvg*0.5
 
+    # 
     future_matchups = [np.array(list(groupby(m).values()))-1 for m in weekly_matchups[games:]]
     future_opponents = weekly_opponents[games:]
     stdev = pts_played.std()*1.03 # Add a little extra uncertainty
+    
     # Unplayed games:
-    games_left = season_weeks - games
+    games_left = max(0, season_weeks - games) 
 
 
+    # Simulation
     N = 5000
     rng = np.random.default_rng()
 
@@ -293,11 +414,11 @@ if url != "" and season_weeks != '':
     overall_wins = (wins_played.sum(axis=0).reshape((-1, 1)) + wins_unplayed.sum(axis=0)).T
 
     if game_vs_league_median:
-        overall_wins += rotis_wins.sum(axis=0).reshape((1, -1)) + (rotis_unplayed >= 5).sum(axis=0).T
+        overall_wins +=  (rotis_unplayed >= 5).sum(axis=0).T
 
     getSeeds = playoff_formats.getSeeds(playoff_format)
     
-    seeds = getSeeds(n_teams, N, overall_pts, overall_wins, rr_df.loc[teams_canonical, 'division'].values)
+    seeds = getSeeds(n_teams, N, overall_pts, overall_wins, divisions)
 
     playoffResults = makeAllPlayoffResults(overall_pts, seeds, n_playoff_teams, season_weeks, stdev)
 
