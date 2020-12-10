@@ -4,7 +4,10 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import requests
+import datetime
 from collections import OrderedDict, defaultdict, Counter
+
+currentYear = datetime.datetime.today().year
 
 def groupby(d):
     res = defaultdict(list)
@@ -48,30 +51,52 @@ def get_rosters(id):
     return requests.get("https://api.sleeper.app/v1/league/{}/rosters".format(id)).json()
 
 @st.cache
-def get_league_espn(id):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id)).json()
+def get_league_espn(id, swid=None, espn_s2=None):
+    if swid is not None:
+        cookies = dict(swid=swid, espn_s2=espn_s2)
+    else:
+        cookies = None
+    if swid is not None:
+        return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), cookies=cookies).json()
 
 @st.cache
-def get_league_data_espn(id):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mMatchup")).json()
+def get_league_data_espn(id, swid=None, espn_s2=None):
+    if swid is not None:
+        cookies = dict(swid=swid, espn_s2=espn_s2)
+    else:
+        cookies = None
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mMatchup"), cookies=cookies).json()
 
 @st.cache
-def get_league_members_espn(id):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mTeam")).json()
+def get_league_members_espn(id, swid=None, espn_s2=None):
+    if swid is not None:
+        cookies = dict(swid=swid, espn_s2=espn_s2)
+    else:
+        cookies = None
+    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/seasons/2020/segments/0/leagues/{}".format(id), params=dict(view="mTeam"), cookies=cookies).json()
 
 
 @st.cache
 def get_league_espn_hist(id, year):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year)).json()[0]
+    if year != currentYear:
+        return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year)).json()[0]
+    else:
+        return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year)).json()
 
 @st.cache
 def get_league_data_espn_hist(id, year):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mMatchup")).json()[0]
+    if year != currentYear:
+        return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mMatchup")).json()[0]
+    else:
+        return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mMatchup")).json()
 
 @st.cache
 def get_league_members_espn_hist(id, year):
-    return requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mTeam")).json()[0]
-
+    req = requests.get("https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{}".format(id), params=dict(seasonId=year, view="mTeam")).json()
+    if year != currentYear:
+        return req[0]
+    else:
+        return req
 
 @st.cache
 def get_matchups(id, week):
@@ -237,6 +262,20 @@ def analyzePlayoffResults(playoffResults, teams):
 
 st.title("Fantasy Football Playoff Odds")
 league_website = st.selectbox("League website", options=["Sleeper" , "ESPN"])
+
+if league_website == 'ESPN':
+    st.write("""If your ESPN league is completely private, do one of the following:
+    
+1) Ask your league manager to make your league viewable to the public (https://support.espn.com/hc/en-us/articles/360000064451-Making-a-Private-League-Viewable-to-the-Public), or
+    
+2) Enter swid and ESPN_S2 cookies (in Chrome, paste `chrome://settings/cookies/detail?site=espn.com` into the url bar and copy and paste the Content under the SWID and espn_s2 entries) here.
+    """)
+    swid = st.text_input("SWID")
+    espn_s2 = st.text_input("espn_s2")
+else:
+    swid = None
+    espn_s2 = None
+
 url = st.text_input("League ID")
 season_weeks = intx(st.text_input("Regular season weeks"))
 playoff_format = st.selectbox("How are playoff seeds determined?",
@@ -318,9 +357,9 @@ if url != "" and season_weeks != '' and league_website == 'ESPN':
     id = get_id(url)
 
     st.write(id)
-    league = get_league_espn(id)
-    league_data = get_league_data_espn(id)
-    member_info = get_league_members_espn(id)
+    league = get_league_espn(id, swid, espn_s2)
+    league_data = get_league_data_espn(id, swid, espn_s2)
+    member_info = get_league_members_espn(id, swid, espn_s2)
 
     # Maps id to full name...
     member_dict = {x['id']: x['firstName']+x['lastName'] for x in member_info['members']}
