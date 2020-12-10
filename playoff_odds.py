@@ -63,13 +63,16 @@ def rotisserie(pts):
 def simulate_remaining_weeks(games_left, n_teams, N, pts_regress, stdev, future_opponents):
     pts_unplayed = np.zeros((games_left, n_teams, N))
     wins_unplayed = np.zeros((games_left, n_teams, N), dtype=bool)
+    rotis_unplayed = np.zeros((games_left, n_teams, N), dtype=int)
 
     for i in range(games_left):
         pts_unplayed[i] = rng.normal(scale=stdev,
                         loc=pts_regress.reshape((-1, 1)), size=(n_teams, N))
+        rotis_unplayed[i] = rotisserie(pts_unplayed[i].T).T
         wins_unplayed[i] = pts_unplayed[i] > pts_unplayed[i][future_opponents[i]]
+
     
-    return pts_unplayed, wins_unplayed
+    return pts_unplayed, wins_unplayed, rotis_unplayed
 
 @st.cache
 def getSeedsArray(n_teams, N, overall_pts, overall_wins, divisions):
@@ -195,6 +198,8 @@ def analyzePlayoffResults(playoffResults, teams):
         pass
     return dfPRO
 
+# st.write('''<div style='height: 200px; background-image: url("https://lh5.googleusercontent.com/GAmGcsk5dPuofSN8eXAYinlFC8lxIQdvynYW7CgyoGRhOy_em36mmJ1pNtpchiz7Es-q86OUjA=w16383");'></div>''', unsafe_allow_html=True)
+
 st.title("Fantasy Football Playoff Odds")
 st.write("Enter your Sleeper league url or ID below:")
 url = st.text_input("Sleeper URL or ID")
@@ -204,7 +209,10 @@ playoff_format = st.selectbox("How are playoff seeds determined?",
                     format_func=playoff_formats,
                     index=0)
 game_vs_league_median = st.checkbox("Extra game vs league median?")
+
 st.write("TO DO: Add options to choose exactly how playoff teams are chosen and seeded here")
+
+
 
 
 if url != "" and season_weeks != '':
@@ -276,11 +284,17 @@ if url != "" and season_weeks != '':
     N = 5000
     rng = np.random.default_rng()
 
-    pts_unplayed, wins_unplayed = simulate_remaining_weeks(
+    pts_unplayed, wins_unplayed, rotis_unplayed = simulate_remaining_weeks(
             games_left, n_teams, N, pts_regress, stdev, future_opponents)
+    
+
 
     overall_pts = (pts_played.sum(axis=0).reshape((-1,1)) + pts_unplayed.sum(axis=0)).T
     overall_wins = (wins_played.sum(axis=0).reshape((-1, 1)) + wins_unplayed.sum(axis=0)).T
+
+    if game_vs_league_median:
+        overall_wins += rotis_wins.sum(axis=0).reshape((1, -1)) + (rotis_unplayed >= 5).sum(axis=0).T
+
     getSeeds = playoff_formats.getSeeds(playoff_format)
     
     seeds = getSeeds(n_teams, N, overall_pts, overall_wins, rr_df.loc[teams_canonical, 'division'].values)
@@ -316,6 +330,7 @@ if url != "" and season_weeks != '':
             if button != 'Any':
                 inds_match = np.nonzero(wins_unplayed[i, list(teams_canonical).index(button), :])
                 inds = np.intersect1d(inds, inds_match, assume_unique=True)
+
 
     # Print weekly matchup projections
     for i, match_ in enumerate(future_matchups):
