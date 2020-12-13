@@ -110,6 +110,7 @@ def filter_rosters(rosters):
 def intx(x):
     return int(x) if x != '' else x
 
+@st.cache
 def rotisserie(pts):
     rotis = np.argsort(pts)
     n_games, n_teams = pts.shape
@@ -168,10 +169,10 @@ def makeSeeds(seeds, teams, n_playoff_teams):
     dfSeedsPercent['avgSeed'] = dfSeedsPercent[np.arange(1, len(teams)+1)].values @ np.arange(1, len(teams)+1) / 100
     dfSeedsPercent.sort_values('avgSeed', ascending=True, inplace=True)
     dfS = dfSeedsPercent[np.arange(1, n_playoff_teams+1)]
-    dfS['Any'] = dfS.values.sum(axis=1)
+    dfSeedsPercent['Any'] = dfS.values.sum(axis=1)
     inds_out = ['Any']
     inds_out.extend(np.arange(1, n_playoff_teams+1))
-    return dfS.loc[:, inds_out]
+    return dfSeedsPercent.loc[:, inds_out]
 
 playoff_options = {"record_points": ("By record, using total points as a tiebreaker", getSeedsArray),
         "record_division_points": ("By record (division winners get top seeds), using total points as a tiebreaker", getSeedsArrayDivisions)}
@@ -277,13 +278,17 @@ else:
     espn_s2 = None
 
 url = st.text_input("League ID")
-season_weeks = intx(st.text_input("Regular season weeks"))
+season_weeks = st.number_input("Regular season weeks", value=13)
 playoff_format = st.selectbox("How are playoff seeds determined?",
                     options=playoff_formats.options,
                     format_func=playoff_formats,
                     index=0)
 game_vs_league_median = st.checkbox("Extra game vs league median?")
+historical = st.checkbox("Use older data")
 
+historical_games = 0
+if historical:
+    historical_games = st.number_input("Games", value=11)
 
 
 
@@ -324,7 +329,7 @@ if url != "" and season_weeks != '' and league_website == 'Sleeper':
 
 
     games = (rr_df['wins'].iloc[0] + rr_df['losses'].iloc[0] + rr_df['ties'].iloc[0])
-    week = games + 1
+
     # Contains wins, losses, points, almost everything
     # we need on a week-by-week basis
 
@@ -384,8 +389,7 @@ if url != "" and season_weeks != '' and league_website == 'ESPN':
             pts[week-1, game['home']['teamId']-1] = game['home']['totalPoints']
             weekly_matchups_dict[week].append((game['away']['teamId']-1, game['home']['teamId']-1))
     
-    week = league['status']['currentMatchupPeriod']
-    games = week - 1
+    games = league['status']['currentMatchupPeriod'] - 1
 
     weekly_matchups = [weekly_matchups_dict[i] for i in range(1, season_weeks+1)]
     weekly_opponents = np.array([make_opp_arr(x) for x in weekly_matchups])
@@ -406,12 +410,22 @@ if url != "" and season_weeks != '' and league_website == 'ESPN':
 
 
 if url != "" and season_weeks != '':
+
+    if historical:
+        games = historical_games
+
     # This stuff is largely reproducible...
     pts_played = pts[:games]
     wins_played = np.array([pts_row > pts_row[opp] for pts_row, opp in zip(pts_played, weekly_opponents[:games])])
     total_wins = wins_played.sum(axis=0)
 
     rotis = rotisserie(pts_played)
+    # st.dataframe(
+    #     pd.DataFrame(data=rotis.T, columns=np.arange(1, 12),
+    #     index=teams_canonical).style\
+    #     .format("{:.0f}")\
+    #     .background_gradient(cmap='RdBu_r', low=1.25, high=1.25)
+    # )
     rotis_win_pct = rotis.mean(axis=0)/(n_teams - 1)
     rotis_wins = rotis >= int(n_teams/2)
 
@@ -419,7 +433,7 @@ if url != "" and season_weeks != '':
         total_wins += rotis_wins.sum(axis=0)
     
     st.write("Current Standings")
-    df_standings = pd.DataFrame(np.c_[total_wins, pts.sum(axis=0), rotis_win_pct, divisions], index=teams_canonical,
+    df_standings = pd.DataFrame(np.c_[total_wins, pts_played.sum(axis=0), rotis_win_pct, divisions], index=teams_canonical,
                             columns=['Wins', 'Pts', 'Rotis. Win %', 'Division'])
     # This should be generated from scratch...
     st.dataframe(df_standings.style.format("{:.0f}", subset=['Division'])\
@@ -450,7 +464,7 @@ if url != "" and season_weeks != '':
 
 
     overall_pts = (pts_played.sum(axis=0).reshape((-1,1)) + pts_unplayed.sum(axis=0)).T
-    overall_wins = (wins_played.sum(axis=0).reshape((-1, 1)) + wins_unplayed.sum(axis=0)).T
+    overall_wins = (total_wins + wins_unplayed.sum(axis=0).T)
 
     if game_vs_league_median:
         overall_wins +=  (rotis_unplayed >= 5).sum(axis=0).T
@@ -461,11 +475,19 @@ if url != "" and season_weeks != '':
 
     playoffResults = makeAllPlayoffResults(overall_pts, seeds, n_playoff_teams, season_weeks, stdev)
 
+
     inds = np.arange(N, dtype=int)
 
 
     st.write("Projected outcomes for each game:")
-    slots = [st.empty() for _ in range(games_left*2)]
+    if games_left <= 1:
+        slots = [st.empty() for _ in range(games_left*2)]
+    else:
+        cols = st.beta_columns(2)
+        slots = []
+        for i in range(games_left):
+            slots.append(cols[i % 2].empty())
+            slots.append(cols[i % 2].empty())
 
     st.write("Use the buttons to see how playoff chances change depending on the results of each game.")
 
@@ -473,7 +495,7 @@ if url != "" and season_weeks != '':
     n_cols = int(n_teams / 2)
     buttons = []
     for j, match_ in enumerate(future_matchups):
-        st.write("Week {}".format(week+j))
+        st.write("Week {}".format(games+1+j))
         cols = st.beta_columns(n_cols) 
         weekly_buttons = []
         for i, x in enumerate(match_):
@@ -492,9 +514,9 @@ if url != "" and season_weeks != '':
                 inds = np.intersect1d(inds, inds_match, assume_unique=True)
 
 
-    # Print weekly matchup projections
+
     for i, match_ in enumerate(future_matchups):
-        slots[i*2].write("Week {}".format(week+i))
+        slots[i*2].write("Week {}".format(games+1+i))
         dfWeek = pd.DataFrame(np.c_[
                 wins_unplayed[i, :, inds].mean(axis=0)*100,
                 pts_unplayed[i, :, inds].mean(axis=0)]
@@ -518,21 +540,81 @@ if url != "" and season_weeks != '':
 
     dfPRO = analyzePlayoffResults(playoffResults[inds], teams_canonical)
     
-    st.write("Playoff Seeding Chances")
+    st.subheader("Playoff Seeding Chances")
     st.dataframe(dfSS.style.format("{:.1f}")\
         .background_gradient(cmap='Greens', low=0.0, high=0.7))
 
     
-    st.write("Standings")
+    st.subheader("Predicted Standings")
     dfAvg.sort_values('avgWins', inplace=True, ascending=False)
     st.dataframe(dfAvg.style.format("{:.1f}")\
         .background_gradient(cmap='RdBu_r', low=1, high=1, axis=0))
 
 
-    st.write("Playoff Outcomes")
+    st.subheader("Playoff Outcomes")
     st.dataframe(dfPRO.style.format("{:.1f}")\
         .background_gradient(cmap='Greens', low=0.0, high=0.7))
     
+
+    st.subheader("Path to the playoffs")
+    st.write("Choose your team to see how you can make the playoffs most easily.")
+    playoff_path_team = st.selectbox("Team",
+                options=teams_canonical)
+    run_path = st.button("Run")
+    if run_path:
+        i_team = list(teams_canonical).index(playoff_path_team)
+        inds2 = np.arange(N, dtype=int)
+        my_seeds = seeds[:, i_team]
+        playoff_percent = (my_seeds <= n_playoff_teams).mean()
+        st.write(f"Your current playoff chances are {100*playoff_percent:.1f}%.")
+        
+        
+        for i in range(games_left):
+            inds_match = np.nonzero(wins_unplayed[i, i_team, :])
+            inds2 = np.intersect1d(inds2, inds_match, assume_unique=True)
+        
+
+        st.subheader("Win out")
+        dfSS2 = makeSeeds(seeds[inds2], teams_canonical, n_playoff_teams)
+        win_out = dfSS2.loc[playoff_path_team, "Any"]
+        analyze_chances = True
+        if win_out > 99.9:
+            st.write("You **control your own destiny** - if you win out, you will make the playoffs with the following projections:")
+        elif win_out > 0.1:
+            st.write(f"You **need help to make the playoffs**. Even if you win out, you have a {win_out:.1f}% chance to make the playoffs.")
+        else:
+            st.write(f"Even if you win out, you **cannot make the playoffs**. Better luck next year!")
+            analyze_chances = False
+        
+        st.dataframe(dfSS2.style.format("{:.1f}")\
+        .background_gradient(cmap='Greens', low=0.0, high=0.7))
+
+        if analyze_chances:
+            inds3 = np.arange(N, dtype=int)
+            other_teams = list(range(n_teams))
+            other_teams.pop(i_team)
+            rooting_interests = []
+            for i in range(games_left):
+                rooting_week = []
+                for j in other_teams:
+                    inds_match = np.nonzero(wins_unplayed[i, j, :])
+                    new_chances = (my_seeds[inds_match] <= n_playoff_teams).mean()
+                    if (new_chances > (playoff_percent+0.005)):
+                        rooting_week.append((j, (new_chances-playoff_percent)*100))
+                rooting_interests.append(np.array(rooting_week))
+
+
+            st.write("This week you should root for:")
+            this_week = rooting_interests[0]
+            this_week_df = pd.DataFrame({"Team": teams_canonical[this_week[:, 0].astype(int)],
+                            "Opponent": teams_canonical[future_opponents[0][this_week[:, 0].astype(int)]],
+                            "Chg. in playoff odds": this_week[:, 1]})
+            this_week_df.sort_values("Chg. in playoff odds", ascending=False, inplace=True)
+            st.write(this_week_df\
+                .style.format("+{:.1f}", subset="Chg. in playoff odds")\
+                .background_gradient(cmap='Greens', low=0.1, high=0.9, ))
+        
+
 
     # Choose playoff teams...
     # Bracket...
