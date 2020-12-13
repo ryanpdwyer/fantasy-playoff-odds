@@ -284,11 +284,11 @@ playoff_format = st.selectbox("How are playoff seeds determined?",
                     format_func=playoff_formats,
                     index=0)
 game_vs_league_median = st.checkbox("Extra game vs league median?")
-historical = st.checkbox("Use older data")
+historical = st.checkbox("See historical projections")
 
 historical_games = 0
 if historical:
-    historical_games = st.number_input("Games", value=11)
+    historical_games = st.number_input("Games to use", value=11)
 
 
 
