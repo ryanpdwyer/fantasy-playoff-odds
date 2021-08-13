@@ -103,9 +103,14 @@ def get_matchups(id, week):
     return requests.get("https://api.sleeper.app/v1/league/{}/matchups/{}".format(id, week)).json()
 
 def filter_rosters(rosters):
-    return {r['roster_id']: dict(wins=r['settings']["wins"], losses=r['settings']['losses'], ties=r['settings']['ties'],
+    if 'division' in rosters[0]['settings']:
+        return {r['roster_id']: dict(wins=r['settings']["wins"], losses=r['settings']['losses'], ties=r['settings']['ties'],
             pts=(int(r['settings']['fpts'])+int(r['settings']['fpts_decimal'])/100),
             division=r['settings']['division']) for r in rosters}
+    else:
+        return {r['roster_id']: dict(wins=r['settings']["wins"], losses=r['settings']['losses'], ties=r['settings']['ties'],
+            pts=(int(r['settings']['fpts'])+int(r['settings']['fpts_decimal'])/100),
+            division=1) for r in rosters}
 
 def intx(x):
     return int(x) if x != '' else x
@@ -614,7 +619,8 @@ if url != "" and season_weeks != '':
         weekly_buttons = []
         for i, x in enumerate(match_):
             weekly_buttons.append(cols[i].radio(label='Winner',
-                options=['Any', teams_canonical[x[0]], teams_canonical[x[1]]]
+                options=['Any', teams_canonical[x[0]], teams_canonical[x[1]]],
+                key=f"week-{j}-matchup-{i}"
             )
         )
         buttons.append(weekly_buttons)
